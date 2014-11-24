@@ -1,0 +1,94 @@
+package main
+
+import (
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+)
+
+var targetURL *url.URL
+
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	o := new(http.Request)
+
+	*o = *r
+
+	o.Host = targetURL.Host
+	o.URL.Scheme = targetURL.Scheme
+	o.URL.Host = targetURL.Host
+	o.URL.Path = singleJoiningSlash(targetURL.Path, o.URL.Path)
+
+	if q := o.URL.RawQuery; q != "" {
+		o.URL.RawQuery = o.URL.Path + "?" + q
+	} else {
+		o.URL.RawQuery = o.URL.Path
+	}
+
+	o.URL.RawQuery = targetURL.RawQuery
+
+	o.Proto = "HTTP/1.1"
+	o.ProtoMajor = 1
+	o.ProtoMinor = 1
+	o.Close = false
+
+	transport := http.DefaultTransport
+
+	respon, err := transport.RoundTrip(o)
+
+	if err != nil {
+		log.Printf("http: proxy error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	hdr := w.Header()
+
+	for k, vv := range respon.Header {
+		for _, v := range vv {
+			hdr.Add(k, v)
+		}
+	}
+
+	for _, c := range respon.Cookies() {
+		w.Header().Add("Set-Cookie", c.Raw)
+	}
+
+	w.WriteHeader(respon.StatusCode)
+
+	if respon.Body != nil {
+		io.Copy(w, respon.Body)
+	}
+}
+
+func main() {
+	url, err := url.Parse("http://www.baidu.com")
+
+	if err != nil {
+		log.Println("Bad target URL")
+	}
+
+	targetURL = url
+
+	http.HandleFunc("/", handler)
+
+	log.Println("Start serving on port 1234")
+
+	http.ListenAndServe(":1234", nil)
+
+	os.Exit(0)
+}
